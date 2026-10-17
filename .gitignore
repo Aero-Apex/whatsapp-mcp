@@ -1,0 +1,19 @@
+# Pairing and message data: never commit these
+store/
+*.db
+qr.txt
+http.env
+
+# Build output and virtual environments
+whatsapp-bridge/whatsapp-bridge
+whatsapp-bridge/whatsapp-bridge.*
+.venv/
+__pycache__/
+*.pyc
+
+# Local backups and logs
+*.bak
+*.pre-*
+*.prev
+*.log
+.DS_Store

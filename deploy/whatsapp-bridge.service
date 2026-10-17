@@ -1,0 +1,18 @@
+# Runs the WhatsApp bridge as a service. Copy to /etc/systemd/system/ and replace the placeholders.
+# Then: sudo systemctl daemon-reload && sudo systemctl enable --now whatsapp-bridge
+
+[Unit]
+Description=WhatsApp bridge (whatsmeow)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/absolute/path/to/whatsapp-mcp/whatsapp-bridge
+ExecStart=/absolute/path/to/whatsapp-mcp/whatsapp-bridge/whatsapp-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

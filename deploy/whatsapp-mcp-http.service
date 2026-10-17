@@ -1,0 +1,19 @@
+# Runs the HTTP MCP server as a service. Copy to /etc/systemd/system/ and replace the placeholders.
+# Requires http.env in the project root (see http.env.example).
+
+[Unit]
+Description=WhatsApp MCP server (HTTP, bearer token)
+After=network-online.target whatsapp-bridge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/absolute/path/to/whatsapp-mcp/whatsapp-mcp-server
+EnvironmentFile=/absolute/path/to/whatsapp-mcp/http.env
+ExecStart=/absolute/path/to/whatsapp-mcp/whatsapp-mcp-server/.venv/bin/python http_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
