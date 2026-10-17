@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bridge:
+    name: Bridge (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: whatsapp-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
+  server:
+    name: MCP server (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: whatsapp-mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-groups
+      - run: uv run pytest -q
+      - run: uv run python -c "import main"

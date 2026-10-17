@@ -1,4 +1,6 @@
 import sqlite3
+import tempfile
+import time
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Optional, List, Tuple
@@ -67,9 +69,14 @@ def lookup_person_name(sender: str) -> Optional[str]:
         conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=5)
         try:
             for column_in, column_out in (("lid", "pn"), ("pn", "lid")):
-                row = conn.execute(
-                    f"SELECT {column_out} FROM whatsmeow_lid_map WHERE {column_in} = ?", (user,)
-                ).fetchone()
+                try:
+                    row = conn.execute(
+                        f"SELECT {column_out} FROM whatsmeow_lid_map WHERE {column_in} = ?", (user,)
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    # The LID mapping table is missing. Contacts can still be found by number,
+                    # so this must not hide the contact lookup below.
+                    break
                 if row and row[0]:
                     candidates.append(row[0])
             for candidate in candidates:
@@ -101,7 +108,22 @@ def lookup_person_name(sender: str) -> Optional[str]:
     return None
 
 
+NAME_CACHE_SECONDS = 300
+_name_cache: dict = {}
+
+
 def get_sender_name(sender_jid: str) -> str:
+    """Display name for a sender. Cached for a few minutes so long listings do not reopen the databases per message."""
+    now = time.monotonic()
+    cached = _name_cache.get(sender_jid)
+    if cached and now - cached[0] < NAME_CACHE_SECONDS:
+        return cached[1]
+    name = _get_sender_name_uncached(sender_jid)
+    _name_cache[sender_jid] = (now, name)
+    return name
+
+
+def _get_sender_name_uncached(sender_jid: str) -> str:
     person = lookup_person_name(sender_jid)
     if person:
         return person
@@ -741,79 +763,72 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
+SEND_TIMEOUT_SECONDS = 300
+STORE_DIR = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store'))
+
+
+def allowed_media_dirs() -> List[str]:
+    """Folders the MCP may read files from when sending. The bridge's store is always included, so downloaded media can be forwarded.
+    Set WHATSAPP_ALLOWED_MEDIA_DIRS to override the defaults (home folder and temp folder), separated by the OS path separator."""
+    configured = os.environ.get("WHATSAPP_ALLOWED_MEDIA_DIRS", "")
+    if configured.strip():
+        folders = [os.path.realpath(os.path.expanduser(p)) for p in configured.split(os.pathsep) if p.strip()]
+    else:
+        folders = [os.path.realpath(os.path.expanduser("~")), os.path.realpath(tempfile.gettempdir())]
+    return folders + [STORE_DIR]
+
+
+def check_media_path(media_path: str) -> Optional[str]:
+    """Return why this file may not be sent, or None when it may be sent."""
+    real = os.path.realpath(os.path.expanduser(media_path))
+    if not os.path.isfile(real):
+        return f"Media file not found: {media_path}"
+    for root in allowed_media_dirs():
+        if real.startswith(root.rstrip(os.sep) + os.sep):
+            relative = os.path.relpath(real, root)
+            if any(part.startswith(".") for part in relative.split(os.sep)):
+                return "Hidden files and folders cannot be sent. Copy the file somewhere else first."
+            return None
+    return "That file is outside the folders allowed for sending. Set WHATSAPP_ALLOWED_MEDIA_DIRS to allow more folders."
+
+
+def _send_media(recipient: str, media_path: str, convert_audio: bool) -> Tuple[bool, str]:
+    if not recipient:
+        return False, "Recipient must be provided"
+    if not media_path:
+        return False, "Media path must be provided"
+    problem = check_media_path(media_path)
+    if problem:
+        return False, problem
+    if convert_audio and not media_path.endswith(".ogg"):
+        try:
+            media_path = audio.convert_to_opus_ogg_temp(media_path)
+        except Exception as e:
+            return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
     try:
-        # Validate input
-        if not recipient:
-            return False, "Recipient must be provided"
-        
-        if not media_path:
-            return False, "Media path must be provided"
-        
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
-        
-        url = f"{WHATSAPP_API_BASE_URL}/send"
-        payload = {
-            "recipient": recipient,
-            "media_path": media_path
-        }
-        
-        response = requests.post(url, json=payload)
-        
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
-        else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
-            
+        response = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/send",
+            json={"recipient": recipient, "media_path": media_path},
+            timeout=SEND_TIMEOUT_SECONDS,
+        )
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
+    if response.status_code != 200:
+        return False, f"Error: HTTP {response.status_code} - {response.text}"
+    try:
+        result = response.json()
+    except ValueError:
         return False, f"Error parsing response: {response.text}"
-    except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+    return result.get("success", False), result.get("message", "Unknown response")
+
+
+def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
+    return _send_media(recipient, media_path, convert_audio=False)
+
 
 def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
-    try:
-        # Validate input
-        if not recipient:
-            return False, "Recipient must be provided"
-        
-        if not media_path:
-            return False, "Media path must be provided"
-        
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
+    return _send_media(recipient, media_path, convert_audio=True)
 
-        if not media_path.endswith(".ogg"):
-            try:
-                media_path = audio.convert_to_opus_ogg_temp(media_path)
-            except Exception as e:
-                return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
-        
-        url = f"{WHATSAPP_API_BASE_URL}/send"
-        payload = {
-            "recipient": recipient,
-            "media_path": media_path
-        }
-        
-        response = requests.post(url, json=payload)
-        
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
-        else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
-            
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
-    except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
 
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path.

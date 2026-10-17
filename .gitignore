@@ -4,12 +4,17 @@ store/
 qr.txt
 http.env
 
+# Exports contain private chat text
+exports/
+
 # Build output and virtual environments
 whatsapp-bridge/whatsapp-bridge
+whatsapp-bridge/whatsapp-bridge-*
 whatsapp-bridge/whatsapp-bridge.*
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Local backups and logs
 *.bak

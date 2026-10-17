@@ -32,7 +32,8 @@ class BearerAuth:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
-            auth = dict(scope["headers"]).get(b"authorization", b"").decode("latin-1")
+            values = [value for name, value in scope["headers"] if name.lower() == b"authorization"]
+            auth = values[0].decode("latin-1") if len(values) == 1 else ""
             allowed = bool(MCP_TOKEN) and hmac.compare_digest(auth.encode(), f"Bearer {MCP_TOKEN}".encode())
             if not allowed:
                 await PlainTextResponse("Unauthorized", status_code=401)(scope, receive, send)

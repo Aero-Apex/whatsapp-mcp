@@ -59,32 +59,8 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
 
-	// Create tables if they don't exist
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS chats (
-			jid TEXT PRIMARY KEY,
-			name TEXT,
-			last_message_time TIMESTAMP
-		);
-		
-		CREATE TABLE IF NOT EXISTS messages (
-			id TEXT,
-			chat_jid TEXT,
-			sender TEXT,
-			content TEXT,
-			timestamp TIMESTAMP,
-			is_from_me BOOLEAN,
-			media_type TEXT,
-			filename TEXT,
-			url TEXT,
-			media_key BLOB,
-			file_sha256 BLOB,
-			file_enc_sha256 BLOB,
-			file_length INTEGER,
-			PRIMARY KEY (id, chat_jid),
-			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
-		);
-	`)
+	// Create tables and indexes if they don't exist
+	err = createSchema(db)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -106,13 +82,18 @@ func (store *MessageStore) DeleteMessage(id, chatJID string) error {
 
 func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
-		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+		`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
+        ON CONFLICT(jid) DO UPDATE SET
+            name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
+            last_message_time = MAX(COALESCE(chats.last_message_time, excluded.last_message_time), excluded.last_message_time)`,
 		jid, name, lastMessageTime,
 	)
 	return err
 }
 
-// Store a message in the database
+// StoreMessage saves a message. When the same message arrives again (live, history sync or an edit),
+// only the fields the new copy actually has replace the stored ones. A copy without media details
+// therefore cannot erase a working download link or key.
 func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	// Only store if there's actual content or media
@@ -123,9 +104,21 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	sender = keepKnownSender(store, id, chatJID, sender, isFromMe)
 
 	_, err := store.db.Exec(
-		`INSERT OR REPLACE INTO messages 
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages
+        (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id, chat_jid) DO UPDATE SET
+            sender = excluded.sender,
+            content = CASE WHEN excluded.content != '' THEN excluded.content ELSE messages.content END,
+            timestamp = excluded.timestamp,
+            is_from_me = excluded.is_from_me,
+            media_type = CASE WHEN excluded.media_type != '' THEN excluded.media_type ELSE messages.media_type END,
+            filename = CASE WHEN excluded.filename != '' THEN excluded.filename ELSE messages.filename END,
+            url = CASE WHEN excluded.url != '' THEN excluded.url ELSE messages.url END,
+            media_key = COALESCE(excluded.media_key, messages.media_key),
+            file_sha256 = COALESCE(excluded.file_sha256, messages.file_sha256),
+            file_enc_sha256 = COALESCE(excluded.file_enc_sha256, messages.file_enc_sha256),
+            file_length = CASE WHEN excluded.file_length > 0 THEN excluded.file_length ELSE messages.file_length END`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
@@ -848,6 +841,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	registerActionRoutes(client)
 	registerMoreActionRoutes(client)
 	registerHistoryRoutes(client)
+	registerStatusRoutes(client, messageStore)
 
 	// Handler for downloading media
 	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {

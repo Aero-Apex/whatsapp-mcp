@@ -9,16 +9,17 @@ Everything runs on a machine you control:
 
 There is no hosted service, no shared account and no server run by the author. Anyone who wants to use it runs their own copy with their own WhatsApp login.
 
-Based on [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) (MIT). This version adds group admin tools, reply/react/edit/delete, on-demand history loading, sender-name repair, media viewing (images, video frames, PDF/Word/text documents) and an HTTP mode with bearer-token authentication.
+Based on [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) (MIT). See [CHANGELOG.md](CHANGELOG.md) for what changed in 1.0.0.
 
 > **Warning:** this uses an unofficial WhatsApp client ([whatsmeow](https://github.com/tulir/whatsmeow)). WhatsApp can restrict or ban accounts that automate them. Use it for your own chats, not for bulk or spam messaging.
 
 ## What you can do
 
-- Search and read chats, contacts and groups; list media and load older history from your phone.
-- Send text, files, voice notes, locations, contacts and polls; reply, react, edit and delete.
-- Manage groups: create, rename, change description, participants, invite links, admin-only settings.
-- Let Claude look at photos and video frames, and read PDF, Word (.docx) and plain-text documents.
+- **Read:** search and list chats and messages, see the context around a message, list media, load older history from your phone, and look up contacts.
+- **Send:** text, files, voice notes, locations, contacts and polls; reply, react, edit, delete and forward.
+- **Groups:** create, rename, change the description, manage participants, invite links, admin-only settings.
+- **Insights:** statistics for a chat (who writes most, media types, busiest days), exports to Markdown or JSON, bridge status.
+- **Media:** Claude can look at photos and video frames, and read PDF, Word (.docx) and plain-text documents.
 
 Audio is not transcribed.
 
@@ -28,6 +29,8 @@ Audio is not transcribed.
 - The bridge's REST API listens only on `127.0.0.1`.
 - The HTTP mode (`whatsapp-mcp-server/http_server.py`) requires `Authorization: Bearer <MCP_TOKEN>` on every request and answers `401` without it. Choose a long random token and keep it secret. Never commit `http.env`.
 - If you publish the HTTP mode through a tunnel or a reverse proxy, the token is the only thing protecting your WhatsApp account. Prefer the local stdio mode when you can.
+- Files can only be sent from allowed folders (your home folder, the temp folder and the bridge's store by default), and hidden files and folders such as `.ssh` or `.env` are never sent. Change this with `WHATSAPP_ALLOWED_MEDIA_DIRS`.
+- Exports can contain private chat text. They are written to `whatsapp-mcp-server/exports/` by default, which is git-ignored.
 
 ## Requirements
 
@@ -49,7 +52,9 @@ go build -o whatsapp-bridge .
 
 The first run shows a QR code in the terminal and also writes it to `store/qr.txt`. On your phone open **WhatsApp → Settings → Linked devices → Link a device** and scan it. Once linked, the bridge keeps running and reconnects by itself.
 
-### 2. Start the bridge and the MCP server
+Check that it is running with `curl http://127.0.0.1:8786/api/status`, or ask Claude to call `bridge_status`.
+
+### 2. Run the MCP server
 
 Keep the bridge running (see `deploy/whatsapp-bridge.service` for running it as a service).
 
@@ -87,6 +92,28 @@ uv run http_server.py
 
 Clients must send `Authorization: Bearer <MCP_TOKEN>`. Only use this behind a tunnel or proxy you control (see `deploy/whatsapp-mcp-http.service`).
 
+## Configuration
+
+| Variable | Used by | Default | Purpose |
+| --- | --- | --- | --- |
+| `MCP_TOKEN` | HTTP server | (required) | Bearer token every HTTP request must send |
+| `PUBLIC_HOST` | HTTP server | `localhost` | Host name clients connect to (DNS-rebinding check) |
+| `HOST` / `PORT` | HTTP server | `127.0.0.1` / `8795` | Listen address |
+| `WHATSAPP_ALLOWED_MEDIA_DIRS` | MCP server | home folder and temp folder | Folders files may be sent from, separated by the OS path separator. The bridge store is always included. |
+| `WHATSAPP_EXPORT_DIR` | MCP server | `whatsapp-mcp-server/exports` | Where `export_chat` writes files |
+
+## Tools added in 1.0.0
+
+| Tool | What it does |
+| --- | --- |
+| `bridge_status` | Is the bridge running, connected and logged in? Store counts and version. |
+| `list_contacts` | Saved contacts, filtered by name or number. |
+| `chat_stats` | Message counts, top senders, media types and busiest days for one chat, optionally between two dates. |
+| `export_chat` | Write one chat (or a date range) to a Markdown or JSON file and return a preview. |
+| `forward_message` | Forward a text or media message to another chat. |
+
+Dates are UTC. `since` is inclusive and `until` is exclusive, so `until = 2026-08-01` includes all of July.
+
 ## Repairing senders in old group messages
 
 Some older group messages were stored without their real sender and show as `(unknown member)`. With the bridge running, this asks your phone for older history and fixes those senders:
@@ -96,6 +123,20 @@ python3 tools/backfill_senders.py <group-jid>@g.us 60
 ```
 
 It only works on group chats and stops when no more senders can be fixed.
+
+## Testing
+
+```bash
+cd whatsapp-mcp-server
+uv sync --all-groups
+uv run pytest
+
+cd ../whatsapp-bridge
+go vet ./...
+go test -count=1 ./...
+```
+
+The Python tests use a temporary database and never contact WhatsApp. The Go tests use an in-memory SQLite database and need a C compiler.
 
 ## Known limits
 
@@ -107,7 +148,7 @@ It only works on group chats and stops when no more senders can be fixed.
 
 ```
 whatsapp-bridge/        Go bridge: WhatsApp connection, SQLite store, REST API on 127.0.0.1:8786
-whatsapp-mcp-server/    Python MCP server (stdio, or HTTP with a bearer token)
+whatsapp-mcp-server/    Python MCP server (stdio, or HTTP with a bearer token) and its tests
 tools/                  Optional repair scripts
 deploy/                 Example service files and configs (placeholders only)
 ```

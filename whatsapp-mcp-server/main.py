@@ -16,6 +16,7 @@ from whatsapp import (
 )
 
 from whatsapp import delete_whatsapp_message, bridge_action
+import insights
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
@@ -656,6 +657,73 @@ def get_blocklist() -> Dict[str, Any]:
     """List the contacts you have blocked."""
     success, message, data = bridge_action("blocklist", {})
     return {"success": success, "message": message, "data": data}
+
+
+@mcp.tool()
+def bridge_status() -> Any:
+    """Check the WhatsApp bridge: whether it is running, connected and logged in, plus store counts.
+
+    Use this first when something does not work. "connected" false usually means the bridge lost its
+    connection and needs a restart, or the device needs linking again.
+    """
+    return insights.bridge_status()
+
+
+@mcp.tool()
+def list_contacts(query: str = "", limit: int = 50) -> Any:
+    """List saved WhatsApp contacts, optionally filtered by name or number.
+
+    Args:
+        query: Text to match in the name or number (leave empty to list everyone)
+        limit: How many contacts to return, 1 to 500 (default 50)
+    """
+    return insights.list_contacts(query, limit)
+
+
+@mcp.tool()
+def chat_stats(chat_jid: str, since: Optional[str] = None, until: Optional[str] = None) -> Any:
+    """Statistics for one chat: message counts, top senders, media types and busiest days.
+
+    Args:
+        chat_jid: The chat to analyse (a group ends with @g.us, a person with @s.whatsapp.net)
+        since: Only messages on or after this date, e.g. "2026-07-01" (UTC, optional)
+        until: Only messages before this date, e.g. "2026-08-01" (UTC, optional; the day itself is excluded)
+    """
+    return insights.chat_stats(chat_jid, since, until)
+
+
+@mcp.tool()
+def export_chat(
+    chat_jid: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    format: str = "markdown",
+    limit: int = 5000,
+) -> Any:
+    """Export the messages of one chat to a file and return its path and a preview.
+
+    Args:
+        chat_jid: The chat to export
+        since: First day to include, e.g. "2026-07-01" (UTC, optional)
+        until: Day to stop before, e.g. "2026-08-01" (UTC, optional)
+        format: "markdown" (readable, default) or "json" (structured)
+        limit: Most messages to export, up to 20000 (default 5000)
+    """
+    return insights.export_chat(chat_jid, since, until, format, limit)
+
+
+@mcp.tool()
+def forward_message(from_chat_jid: str, message_id: str, to_chat_jid: str) -> Dict[str, Any]:
+    """Forward a message from one chat to another. Text is sent as text; photos, videos, documents and
+    voice notes are downloaded and sent again (their original caption follows as a text message).
+
+    Args:
+        from_chat_jid: The chat the message is in
+        message_id: The message ID (from list_messages, list_media or get_chat)
+        to_chat_jid: The chat to forward it to
+    """
+    success, message = insights.forward_message(from_chat_jid, message_id, to_chat_jid)
+    return {"success": success, "message": message}
 
 
 if __name__ == "__main__":
